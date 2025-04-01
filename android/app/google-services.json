@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "759773921292",
+    "project_id": "userauthentication-24ccb",
+    "storage_bucket": "userauthentication-24ccb.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:759773921292:android:88457d015ba345b4752e29",
+        "android_client_info": {
+          "package_name": "com.example.user_authentication"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAlCqYqVPxoBW1ovEqOkM6qsaNRK5tC_IU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
