@@ -1,14 +1,14 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:get/get.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:user_authentication/admindashboard.dart';
 import 'package:user_authentication/homepage.dart';
 import 'package:user_authentication/signup.dart';
 import 'package:user_authentication/verifyemail.dart';
-
-import 'forgot.dart';
-
+import 'package:user_authentication/forgot.dart';
 
 class Login extends StatefulWidget {
   const Login({super.key});
@@ -18,72 +18,133 @@ class Login extends StatefulWidget {
 }
 
 class _LoginState extends State<Login> {
-  TextEditingController email = TextEditingController();
-  TextEditingController password = TextEditingController();
+  final TextEditingController email = TextEditingController();
+  final TextEditingController password = TextEditingController();
   bool _obscureText = true;
   final _formKey = GlobalKey<FormState>();
+  bool _isLoading = false;
 
-  void _togglePasswordVisibility() {
-    setState(() {
-      _obscureText = !_obscureText;
-    });
+  void _togglePasswordVisibility() => setState(() => _obscureText = !_obscureText);
+
+  Future<bool> _isAdmin(String userId) async {
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .get();
+      return doc.exists && doc.data()?['isAdmin'] == true;
+    } catch (e) {
+      debugPrint('Error checking admin status: $e');
+      return false;
+    }
   }
 
-Future<bool> _isAdmin(String userId) async {
+  // Remove BuildContext parameter since Get.snackbar doesn't need it
+void displayMessageToUser(String message) {
+  // Truncate the message if it's too long
+  final String displayMessage = message.length > 100 ? '${message.substring(0, 97)}...' : message;
+  Get.snackbar(
+    'Authentication',
+    displayMessage,
+    snackPosition: SnackPosition.BOTTOM,
+    backgroundColor: Colors.black87,
+    colorText: Colors.white,
+    margin: const EdgeInsets.all(16),
+    maxWidth: 500, // Limit the width to prevent overflow
+    duration: const Duration(seconds: 5),
+  );
+}
+
+  void onSuccess() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      final isAdmin = await _isAdmin(user.uid);
+      if (isAdmin) {
+        Get.offAll(() => AdminDashboard());
+      } else if (user.emailVerified) {
+        Get.offAll(() => const Homepage());
+      } else {
+        await user.sendEmailVerification();
+        Get.offAll(() => const VerifyEmailPage());
+      }
+    }
+  }
+
+  Future<void> _signInWithGoogle(BuildContext context) async {
+  setState(() => _isLoading = true);
   try {
-    final doc = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(userId)
-        .get();
-    return doc.exists && doc.data()?['isAdmin'] == true;
+    // Ensure clientId is not null
+    final String? clientId = dotenv.env['GOOGLE_CLIENT_ID'];
+    if (clientId == null || clientId.isEmpty) {
+      throw Exception('Google Client ID is missing in .env file');
+    }
+
+    final GoogleSignIn googleSignIn = GoogleSignIn(
+      clientId: clientId, // Use the correct clientId from .env
+      scopes: ['email', 'profile'],
+    );
+
+    // Store mounted state before async operation
+    final bool isMounted = context.mounted;
+
+    final GoogleSignInAccount? googleUser = await googleSignIn.signIn();
+    if (googleUser == null) {
+      if (isMounted) {
+        displayMessageToUser('Google Sign-In cancelled');
+        setState(() => _isLoading = false);
+      }
+      return;
+    }
+
+    final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+    final OAuthCredential credential = GoogleAuthProvider.credential(
+      accessToken: googleAuth.accessToken,
+      idToken: googleAuth.idToken,
+    );
+
+    await FirebaseAuth.instance.signInWithCredential(credential);
+    if (isMounted) onSuccess();
   } catch (e) {
-    debugPrint('Error checking admin status: $e');
-    return false;
+    // Store mounted state before async operation
+    final bool isMounted = context.mounted;
+   if (isMounted) {
+      // Simplify the error message for the user
+      String errorMessage = 'An error occurred during Google Sign-In';
+      if (e.toString().contains('redirect_uri_mismatch')) {
+        errorMessage = 'Authentication failed: Redirect URI mismatch';
+      } else if (e.toString().contains('clientId')) {
+        errorMessage = 'Authentication failed: Invalid Client ID';
+      }
+      displayMessageToUser(errorMessage);
+    }
+  } finally {
+    if (mounted) setState(() => _isLoading = false);
   }
 }
 
-// Modify your signIn function
-signIn() async {
-  if (_formKey.currentState!.validate()) {
+  Future<void> signIn() async {
+    if (_isLoading || !_formKey.currentState!.validate()) return;
+    setState(() => _isLoading = true);
+
     try {
-      // Show loading indicator
-      Get.dialog(
-        const Center(child: CircularProgressIndicator()),
-        barrierDismissible: false,
+      final userCredential = await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: email.text.trim(),
+        password: password.text.trim(),
       );
-      
-      // Authenticate user
-      UserCredential userCredential = await FirebaseAuth.instance
-          .signInWithEmailAndPassword(
-            email: email.text.trim(),
-            password: password.text.trim(),
-          );
 
-      // Check admin status using UID
-      bool isAdmin = await _isAdmin(userCredential.user!.uid);
-
-      // Close loading dialog
-      Get.back();
-
+      final isAdmin = await _isAdmin(userCredential.user!.uid);
       if (isAdmin) {
-        // Redirect admin to admin dashboard
         Get.offAll(() => AdminDashboard());
         return;
       }
 
-      // Normal user flow
       if (userCredential.user?.emailVerified ?? false) {
         Get.offAll(() => const Homepage());
       } else {
         await userCredential.user?.sendEmailVerification();
         Get.offAll(() => const VerifyEmailPage());
       }
-      
     } on FirebaseAuthException catch (e) {
-      // Close loading dialog if still open
-      if (Get.isDialogOpen!) Get.back();
-      
-      // Improved error messages
       String errorMessage = 'Login failed';
       if (e.code == 'user-not-found') {
         errorMessage = 'No account found with this email';
@@ -101,17 +162,17 @@ signIn() async {
         colorText: Colors.white,
       );
     } catch (e) {
-      // Handle any other errors
-      if (Get.isDialogOpen!) Get.back();
       debugPrint('Login error: $e');
       Get.snackbar(
         'Error',
         'An unexpected error occurred',
         snackPosition: SnackPosition.BOTTOM,
       );
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
-}
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -175,12 +236,8 @@ signIn() async {
                               horizontal: 16, vertical: 14),
                         ),
                         keyboardType: TextInputType.emailAddress,
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Please enter your email';
-                          }
-                          return null;
-                        },
+                        validator: (value) =>
+                            value?.isEmpty ?? true ? 'Please enter your email' : null,
                       ),
                       const SizedBox(height: 16),
                       TextFormField(
@@ -190,11 +247,9 @@ signIn() async {
                           labelText: 'Password',
                           prefixIcon: const Icon(Icons.lock_outlined),
                           suffixIcon: IconButton(
-                            icon: Icon(
-                              _obscureText
-                                  ? Icons.visibility_outlined
-                                  : Icons.visibility_off_outlined,
-                            ),
+                            icon: Icon(_obscureText
+                                ? Icons.visibility_outlined
+                                : Icons.visibility_off_outlined),
                             onPressed: _togglePasswordVisibility,
                           ),
                           border: OutlineInputBorder(
@@ -203,18 +258,14 @@ signIn() async {
                           contentPadding: const EdgeInsets.symmetric(
                               horizontal: 16, vertical: 14),
                         ),
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Please enter your password';
-                          }
-                          return null;
-                        },
+                        validator: (value) =>
+                            value?.isEmpty ?? true ? 'Please enter your password' : null,
                       ),
                       const SizedBox(height: 8),
                       Align(
                         alignment: Alignment.centerRight,
                         child: TextButton(
-                         onPressed: () => Get.to(() => const ForgotPassword()),
+                          onPressed: () => Get.to(() => const ForgotPassword()),
                           child: const Text('Forgot Password?'),
                         ),
                       ),
@@ -223,21 +274,72 @@ signIn() async {
                         width: double.infinity,
                         height: 50,
                         child: ElevatedButton(
-                          onPressed: signIn,
+                          onPressed: _isLoading ? null : signIn,
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.black,
                             shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
+                              borderRadius: BorderRadius.circular(12)),
                             elevation: 0,
                           ),
-                          child: const Text(
-                            "Sign In",
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.white
+                          child: _isLoading
+                              ? const CircularProgressIndicator(color: Colors.white)
+                              : const Text(
+                                  "Sign In",
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.white),
+                                ),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      // Divider with "OR" text
+                      Row(
+                        children: [
+                          const Expanded(child: Divider(thickness: 1, color: Colors.grey)),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            child: Text(
+                              "OR",
+                              style: TextStyle(
+                                color: Colors.grey[600],
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
+                          ),
+                          const Expanded(child: Divider(thickness: 1, color: Colors.grey)),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                      // Google Sign-In Button
+                      SizedBox(
+                        width: double.infinity,
+                        height: 50,
+                        child: OutlinedButton(
+                          onPressed: _isLoading ? null : () => _signInWithGoogle(context),
+                          style: OutlinedButton.styleFrom(
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12)),
+                            side: const BorderSide(color: Colors.grey),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Image.asset(
+                                'assets/icons/google.png',
+                                width: 24,
+                                height: 24,
+                              ),
+                              const SizedBox(width: 12),
+                              const Text(
+                                "Continue with Google",
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.black87,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
